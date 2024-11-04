@@ -1,0 +1,139 @@
+-- Etapa 1: Criar a tabela master_churn combinando todas as informações
+CREATE OR REPLACE TABLE `experiencia-com-cliente.Dataset_telco.master_churn` AS (
+  WITH base_tenure_prom AS (
+    SELECT 
+      Contract, 
+      AVG(`Tenure in Months`) AS `media tenure`
+    FROM `experiencia-com-cliente.Dataset_telco.churn_services`
+    GROUP BY Contract
+  )
+  SELECT 
+    a.* EXCEPT(`Zip Code`),
+    b.`Gender`, b.`Age`, b.`Under 30`, b.`Senior Citizen`,
+    b.`Married`, b.`Dependents`, b.`Number of Dependents`,
+    c.`Quarter`, c.`Referred a Friend`, c.`Number of Referrals`,
+    c.`Tenure in Months`, c.`Offer`, c.`Phone Service`,
+    c.`Avg Monthly Long Distance Charges`, c.`Multiple Lines`,
+    c.`Internet Service`, c.`Internet Type`, c.`Avg Monthly GB Download`,
+    c.`Online Security`, c.`Online Backup`, c.`Device Protection Plan`,
+    c.`Premium Tech Support`, c.`Streaming TV`, c.`Streaming Movies`,
+    c.`Streaming Music`, c.`Unlimited Data`, c.`Contract`, c.`Paperless Billing`,
+    c.`Payment Method`, c.`Monthly Charge`, c.`Total Charges`, c.`Total Refunds`,
+    c.`Total Extra Data Charges`, c.`Total Long Distance Charges`, c.`Total Revenue`,
+    d.`Customer Status`, d.`Churn Label`, d.`Churn Value`,
+    d.`Churn Category`, d.`Churn Reason`,
+    p.`media tenure`
+  FROM `experiencia-com-cliente.Dataset_telco.churn_location` a
+  LEFT JOIN `experiencia-com-cliente.Dataset_telco.churn_demographics` b
+    ON a.`Customer ID` = b.`Customer ID`
+  LEFT JOIN `experiencia-com-cliente.Dataset_telco.churn_services` c
+    ON b.`Customer ID` = c.`Customer ID`
+  LEFT JOIN `experiencia-com-cliente.Dataset_telco.churn_status` d
+    ON c.`Customer ID` = d.`Customer ID`
+  LEFT JOIN base_tenure_prom p
+    ON c.Contract = p.Contract
+);
+
+-- Etapa 2: Limpeza e normalização de dados (gender, idade e cobranças)
+CREATE OR REPLACE TABLE `experiencia-com-cliente.Dataset_telco.master_churn` AS (
+  SELECT 
+    * EXCEPT(gender),
+    CASE 
+      WHEN gender = 'M' THEN 'Male'
+      WHEN gender = 'F' THEN 'Female'
+      ELSE gender 
+    END AS gender
+  FROM `experiencia-com-cliente.Dataset_telco.master_churn`
+  WHERE Age <= 80
+    AND `Monthly Charge` > 0
+);
+
+-- Etapa 3: Adicionar faixa etária
+CREATE OR REPLACE TABLE `experiencia-com-cliente.Dataset_telco.master_churn` AS (
+  SELECT 
+    *,
+    CASE 
+      WHEN Age < 41 THEN '0 a 40 anos'
+      WHEN Age BETWEEN 41 AND 60 THEN '41 a 60 anos'
+      ELSE 'Mais de 60 anos'
+    END AS `range age`
+  FROM `experiencia-com-cliente.Dataset_telco.master_churn`
+);
+
+-- Etapa 4: Categorizar número de referências
+CREATE OR REPLACE TABLE `experiencia-com-cliente.Dataset_telco.master_churn` AS (
+  SELECT 
+    *,
+    CASE 
+      WHEN `Number of Referrals` = 0 THEN '0 referências'
+      WHEN `Number of Referrals` BETWEEN 1 AND 4 THEN '1 a 4 referências'
+      WHEN `Number of Referrals` BETWEEN 5 AND 8 THEN '5 a 8 referências'
+      ELSE 'Mais de 8 referências'
+    END AS `reference category`
+  FROM `experiencia-com-cliente.Dataset_telco.master_churn`
+);
+
+-- Etapa 5: Adicionar faixa de tempo de permanência (tenure)
+CREATE OR REPLACE TABLE `experiencia-com-cliente.Dataset_telco.master_churn` AS (
+  SELECT 
+    *,
+    CASE 
+      WHEN `Tenure in Months` BETWEEN 1 AND 12 THEN '1 a 12 meses'
+      WHEN `Tenure in Months` BETWEEN 13 AND 24 THEN '13 a 24 meses'
+      WHEN `Tenure in Months` BETWEEN 25 AND 36 THEN '25 a 36 meses'
+      WHEN `Tenure in Months` BETWEEN 37 AND 48 THEN '37 a 48 meses'
+      WHEN `Tenure in Months` BETWEEN 49 AND 60 THEN '49 a 60 meses'
+      WHEN `Tenure in Months` BETWEEN 61 AND 72 THEN '61 a 72 meses'
+      ELSE 'Mais de 72 meses'
+    END AS `range tenure months`
+  FROM `experiencia-com-cliente.Dataset_telco.master_churn`
+);
+
+-- Etapa 6: Adicionar grupo de risco
+CREATE OR REPLACE TABLE `experiencia-com-cliente.Dataset_telco.master_churn` AS (
+  SELECT 
+    *,
+    CASE
+      WHEN Contract = 'Month-to-Month' AND Age > 64 THEN 'G1'
+      WHEN Contract = 'Month-to-Month' AND Age < 64 AND `Number of Referrals` <= 2 THEN 'G2'
+      WHEN Contract != 'Month-to-Month' AND Age > 64 AND `Number of Referrals` <= 2 THEN 'G3'
+      WHEN Contract != 'Month-to-Month' AND `Tenure in Months` < 40 THEN 'G4'
+      ELSE 'sem grupo'
+    END AS `risk group`
+  FROM `experiencia-com-cliente.Dataset_telco.master_churn`
+);
+
+-- Etapa 7: Categorizar risco de churn
+CREATE OR REPLACE TABLE `experiencia-com-cliente.Dataset_telco.master_churn` AS (
+  SELECT 
+    *,
+    CASE
+      WHEN `risk group` IN ('G1', 'G2') AND `churn rate` > 0.45 THEN 'Alto Risco (Month-to-Month)'
+      WHEN `risk group` IN ('G3', 'G4') AND `churn rate` > 0.27 THEN 'Alto Risco (Outros Contratos)'
+      ELSE 'Baixo/Médio Risco'
+    END AS `churn risk category`
+  FROM (
+    SELECT 
+      *,
+      SUM(CASE WHEN `Churn Value` = 1 THEN 1 ELSE 0 END) OVER (PARTITION BY `risk group`) / 
+      COUNT(*) OVER (PARTITION BY `risk group`) AS `churn rate`
+    FROM `experiencia-com-cliente.Dataset_telco.master_churn`
+  )
+);
+
+-- Etapa 8: Criar tabela com quartis de receita estimada
+CREATE OR REPLACE TABLE `experiencia-com-cliente.Dataset_telco.master_churn_quartis` AS (
+  SELECT 
+    *,
+    (`media tenure` * `Total Revenue`) / 3 AS `ingresso estimado`
+  FROM `experiencia-com-cliente.Dataset_telco.master_churn`
+);
+
+-- Etapa 9: Adicionar quartil estimado
+CREATE OR REPLACE TABLE `experiencia-com-cliente.Dataset_telco.master_churn_quartis` AS (
+  SELECT 
+    *,
+    NTILE(4) OVER (PARTITION BY Contract ORDER BY `ingresso estimado` ASC) AS `quartil estimado`
+  FROM `experiencia-com-cliente.Dataset_telco.master_churn_quartis`
+  WHERE `Churn Value` = 0
+);
